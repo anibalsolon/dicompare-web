@@ -97,7 +97,7 @@ const PyodideLoadingNotification: React.FC = () => {
 
             {/* Error details */}
             {status.error && (
-              <p className="text-xs text-red-500 mt-1">
+              <p className="text-xs text-red-500 mt-1 whitespace-pre overflow-y-auto">
                 {status.error}
               </p>
             )}
