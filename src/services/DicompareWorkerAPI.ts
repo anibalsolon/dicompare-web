@@ -659,9 +659,9 @@ class DicompareWorkerAPI {
    * Run arbitrary Python code and return the result.
    * Used for custom code execution (e.g., test data generation scripts).
    */
-  async runPython(code: string): Promise<any> {
+  async runPython(code: string, globals?: Record<string, any>): Promise<any> {
     await this.ensureInitialized();
-    return this.sendRequest({ type: 'runPython', payload: { code } });
+    return this.sendRequest({ type: 'runPython', payload: { code, globals } });
   }
 
   // ==========================================================================

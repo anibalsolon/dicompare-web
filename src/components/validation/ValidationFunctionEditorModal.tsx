@@ -6,6 +6,8 @@ import { linter, lintGutter } from '@codemirror/lint';
 import { SelectedFunction, TestCase, TestCaseExpectation } from './ValidationFunctionLibraryModal';
 import { dicompareWorkerAPI as dicompareAPI } from '../../services/DicompareWorkerAPI';
 import { useTheme } from '../../contexts/ThemeContext';
+import executeTestDataPy from '../../python/execute_test_data.py';
+import runTestCasePy from '../../python/run_test_case.py';
 
 interface ValidationFunctionEditorModalProps {
   isOpen: boolean;
@@ -204,57 +206,8 @@ return test_data`;
         setPandasInstalled(true);
       }
 
-      const wrappedCode = `
-import pandas as pd
-import numpy as np
-import json
-
-def generate_test_data():
-${code.split('\n').map(line => '    ' + line).join('\n')}
-
-output = None
-try:
-    result = generate_test_data()
-    if not isinstance(result, dict):
-        raise ValueError("Code must return a dictionary")
-
-    # Convert numpy arrays and other non-serializable types to lists
-    cleaned_result = {}
-    for key, value in result.items():
-        if hasattr(value, 'tolist'):  # numpy array
-            cleaned_result[key] = value.tolist()
-        elif isinstance(value, list):
-            # Handle lists that might contain numpy types
-            cleaned_list = []
-            for item in value:
-                if hasattr(item, 'tolist'):
-                    cleaned_list.append(item.tolist())
-                elif hasattr(item, 'item'):  # numpy scalar
-                    cleaned_list.append(item.item())
-                else:
-                    cleaned_list.append(item)
-            cleaned_result[key] = cleaned_list
-        elif hasattr(value, 'item'):  # numpy scalar
-            cleaned_result[key] = [value.item()]
-        else:
-            cleaned_result[key] = [value] if not isinstance(value, list) else value
-
-    # Validate all arrays have same length
-    if cleaned_result:
-        lengths = [len(v) for v in cleaned_result.values()]
-        if len(set(lengths)) > 1:
-            field_lengths = {k: len(v) for k, v in cleaned_result.items()}
-            raise ValueError(f"All fields must have the same number of values. Found: {field_lengths}")
-
-    output = json.dumps({"success": True, "data": cleaned_result})
-except Exception as e:
-    output = json.dumps({"success": False, "error": str(e)})
-
-# Return the JSON output
-output
-`;
-
-      const result = await dicompareAPI.runPython(wrappedCode);
+      const userCodeIndented = code.split('\n').map(line => '    ' + line).join('\n');
+      const result = await dicompareAPI.runPython(executeTestDataPy, { _user_code_indented: userCodeIndented });
 
       // Check if result is undefined or null
       if (result === undefined || result === null) {
@@ -582,126 +535,19 @@ output
         indentedImplementation += '\n    pass';
       }
       
-      // Create DataFrame-like structure for the test
-      const testData = `
-import pandas as pd
-import math
-import sys
-from io import StringIO
-from dicompare.validation import ValidationError, ValidationWarning, BaseValidationModel, validator
-
-# Capture stdout
-captured_output = StringIO()
-sys.stdout = captured_output
-
-# Create test data
-test_data = {${Object.entries(testCase.data).map(([field, values]) => 
-  `"${field}": [${values.filter(v => v !== '' && v != null).map(v => {
-    if (Array.isArray(v)) {
-      // Handle arrays - automatically detected from comma-separated input
-      return `[${v.map(item => typeof item === 'string' ? `"${item}"` : item).join(', ')}]`;
-    } else if (typeof v === 'string') {
-      return `"${v}"`;
-    } else {
-      // Numbers are already parsed
-      return v;
-    }
-  }).join(', ')}]`
-).join(', ')}}
-
-# Try to create DataFrame with better error handling
-try:
-    value = pd.DataFrame(test_data)
-    # Compute smart Count if not already provided
-    # Count = actual slice count (handles mosaic/enhanced DICOM)
-    if "Count" not in value.columns:
-        if "SliceLocation" in value.columns:
-            value["Count"] = value["SliceLocation"].nunique()
-        else:
-            value["Count"] = len(value)
-except ValueError as e:
-    if "All arrays must be of the same length" in str(e):
-        # Provide more helpful error message
-        field_lengths = {${Object.entries(testCase.data).map(([field, values]) => 
-          `"${field}": ${values.filter(v => v !== '' && v != null).length}`
-        ).join(', ')}}
-        error_msg = f"Test data error: All fields must have the same number of values. Found: {field_lengths}"
-        raise ValueError(error_msg)
-    else:
-        raise
-
-# Initialize test results
-test_passed = False
-error_message = None
-
-# Try to compile the function first to catch syntax errors
-function_code = '''def ${editedFunc.id}(cls, value):
-${indentedImplementation}
-'''
-
-try:
-    # First compile the function
-    compiled_code = compile(function_code, '<string>', 'exec')
-    
-    # Create a namespace for execution
-    exec_namespace = {
-        'pd': pd,
-        'math': math,
-        'ValidationError': ValidationError,
-        'ValidationWarning': ValidationWarning,
-        'value': value
-    }
-    
-    # Execute the function definition
-    exec(compiled_code, exec_namespace)
-    
-    # Now try to call the function
-    exec_namespace['${editedFunc.id}'](None, value)
-    
-    # If we reach here without exception, the function passed
-    test_passed = True
-    error_message = None
-    warning_message = None
-
-except SyntaxError as e:
-    test_passed = False
-    error_message = f"Syntax error in function: {str(e)}"
-    warning_message = None
-except ValidationError as e:
-    test_passed = False
-    error_message = str(e)
-    warning_message = None
-except ValidationWarning as e:
-    test_passed = True  # Warning means it passed but with issues
-    error_message = None
-    warning_message = str(e)
-except Exception as e:
-    test_passed = False
-    error_message = f"Unexpected error: {str(e)}"
-    warning_message = None
-
-# Get captured output
-stdout_content = captured_output.getvalue()
-
-# Restore stdout
-sys.stdout = sys.__stdout__
-
-# Return result
-import json
-
-# Return result as JSON
-json.dumps({
-    "passed": test_passed,
-    "error": error_message,
-    "warning": warning_message,
-    "expected_result": "${testCase.expectedResult}",
-    "stdout": stdout_content
-})
-`;
-
+      // Build filtered test data and pass to Python via globals
+      const filteredData: Record<string, any[]> = {};
+      for (const [field, values] of Object.entries(testCase.data)) {
+        filteredData[field] = (values as any[]).filter(v => v !== '' && v != null);
+      }
       let result;
       try {
-        result = await dicompareAPI.runPython(testData);
+        result = await dicompareAPI.runPython(runTestCasePy, {
+          _test_case_data_json: JSON.stringify(filteredData),
+          _func_id: editedFunc.id,
+          _indented_implementation: indentedImplementation,
+          _expected_result: testCase.expectedResult,
+        });
       } catch (pythonError: any) {
         // Clean up error messages for common test setup issues
         let errorMessage = pythonError.message;

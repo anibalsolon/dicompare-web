@@ -1,4 +1,5 @@
 import { DICOMPARE_VERSION } from '../version';
+import setupDicompareOnline from '../python/setup_dicompare_online.py';
 
 // Load Pyodide from CDN instead of bundling
 
@@ -72,23 +73,8 @@ class PyodideManager {
 
     console.log(`📦 Installing dicompare from ${isDevelopment ? 'local development server' : 'PyPI'}...`);
 
-    await pyodide.runPythonAsync(`
-import micropip
-
-# Auto-detected package source based on environment
-await micropip.install('${packageSource}')
-
-# Import the real dicompare modules
-import dicompare
-import dicompare.interface
-import dicompare.validation
-import dicompare.schema
-import dicompare.io
-import json
-from typing import List, Dict, Any
-
-print("✅ Successfully imported real dicompare modules")
-    `);
+    pyodide.globals.set('PACKAGE_SOURCE', packageSource);
+    await pyodide.runPythonAsync(setupDicompareOnline);
 
     console.log('✅ Real dicompare package installed and imported');
   }

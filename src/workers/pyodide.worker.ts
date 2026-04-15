@@ -9,6 +9,19 @@
 import type { WorkerRequest, WorkerResponse, ProgressPayload } from './workerTypes';
 import { loadPyodide as loadPyodideModule, type PyodideInterface } from 'pyodide';
 import { DICOMPARE_VERSION } from '../version';
+import setupDicompareOffline from '../python/setup_dicompare_offline.py';
+import setupDicompareOnline from '../python/setup_dicompare_online.py';
+import getVersion from '../python/get_version.py';
+import analyzeFiles from '../python/analyze_files.py';
+import analyzeBatch from '../python/analyze_batch.py';
+import validateAcquisition from '../python/validate_acquisition.py';
+import loadProtocol from '../python/load_protocol.py';
+import searchFields from '../python/search_fields.py';
+import getFieldInfo from '../python/get_field_info.py';
+import generateSchema from '../python/generate_schema.py';
+import generateTestDicoms from '../python/generate_test_dicoms.py';
+import categorizeFields from '../python/categorize_fields.py';
+import clearCachePy from '../python/clear_cache.py';
 
 // Use the official Pyodide types
 type PyodideInstance = PyodideInterface;
@@ -155,7 +168,7 @@ async function initializePyodide(requestId?: string): Promise<{ pyodideVersion: 
     // Note: Don't use hostname detection as localhost is used in production containers too
     const isDevelopment = import.meta.env?.MODE === 'development';
     packageSource = isDevelopment
-      ? `http://localhost:8000/dist/dicompare-0.0.0-py3-none-any.whl`
+      ? `http://localhost:3001/pyodide/wheels/dicompare-${DICOMPARE_VERSION}-py3-none-any.whl`
       : `dicompare==${DICOMPARE_VERSION}`;
     console.log(`[Worker] Installing dicompare from ${isDevelopment ? 'local dev server' : 'PyPI'}...`);
   }
@@ -163,64 +176,20 @@ async function initializePyodide(requestId?: string): Promise<{ pyodideVersion: 
   reportProgress('Loading DICOM analysis tools...', 60);
 
   // For Electron production, we need to install dependencies from bundled wheels too
-  const installCode = inElectronProd ? `
-import micropip
-
-# Install bundled wheels for offline use with absolute file:// URLs
-wheel_base = '${wheelBase}'
-wheels_to_install = [
-    wheel_base + 'pydicom-2.4.4-py3-none-any.whl',
-    wheel_base + 'tabulate-0.9.0-py3-none-any.whl',
-    wheel_base + 'nibabel-5.3.3-py3-none-any.whl',
-    wheel_base + 'twixtools-0.24-py3-none-any.whl',
-    '${packageSource}',
-]
-
-for wheel in wheels_to_install:
-    try:
-        await micropip.install(wheel)
-        print(f"[Worker] Installed {wheel}")
-    except Exception as e:
-        print(f"[Worker] Warning: Could not install {wheel}: {e}")
-
-import dicompare
-import dicompare.interface
-import dicompare.validation
-import dicompare.schema
-import dicompare.io
-import json
-from typing import List, Dict, Any
-
-print("[Worker] dicompare modules imported successfully")
-` : `
-import micropip
-await micropip.install('${packageSource}')
-
-import dicompare
-import dicompare.interface
-import dicompare.validation
-import dicompare.schema
-import dicompare.io
-import json
-from typing import List, Dict, Any
-
-print("[Worker] dicompare modules imported successfully")
-`;
-
-  await pyodide.runPythonAsync(installCode);
+  if (inElectronProd) {
+    pyodide.globals.set('WHEEL_BASE', wheelBase);
+    pyodide.globals.set('PACKAGE_SOURCE', packageSource);
+    await pyodide.runPythonAsync(setupDicompareOffline);
+  } else {
+    pyodide.globals.set('PACKAGE_SOURCE', packageSource);
+    await pyodide.runPythonAsync(setupDicompareOnline);
+  }
 
   reportProgress('Finalizing...', 90);
 
   // Get versions
-  const versionResult = await pyodide.runPython(`
-import json
-import sys
-import dicompare
-json.dumps({
-    'pyodide': '.'.join(map(str, sys.version_info[:3])),
-    'dicompare': getattr(dicompare, '__version__', '${DICOMPARE_VERSION}')
-})
-  `);
+  pyodide.globals.set('DICOMPARE_VERSION', DICOMPARE_VERSION);
+  const versionResult = await pyodide.runPython(getVersion);
 
   const versions = JSON.parse(versionResult);
   console.log(`[Worker] Ready - Python ${versions.pyodide}, dicompare ${versions.dicompare}`);
@@ -259,30 +228,7 @@ async function handleAnalyzeFiles(
   pyodide.globals.set('dicom_file_names', fileNames);
   pyodide.globals.set('dicom_file_contents', contents);
 
-  const result = await pyodide.runPythonAsync(`
-import json
-from dicompare.interface import analyze_dicom_files_for_ui
-
-names = list(dicom_file_names)
-total_files = len(names)
-print(f"[Worker] Processing {total_files} files...")
-
-dicom_bytes = {}
-for i, name in enumerate(names):
-    content = dicom_file_contents[i]
-    if hasattr(content, 'getBuffer'):
-        buf = content.getBuffer()
-        dicom_bytes[name] = bytes(buf.data)
-        buf.release()
-    elif hasattr(content, 'to_py'):
-        dicom_bytes[name] = bytes(content.to_py())
-    else:
-        dicom_bytes[name] = bytes(content)
-
-print(f"[Worker] Converted {len(dicom_bytes)} files, analyzing...")
-acquisitions = await analyze_dicom_files_for_ui(dicom_bytes, progress_callback)
-json.dumps(acquisitions, default=str)
-  `);
+  const result = await pyodide.runPythonAsync(analyzeFiles);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -315,37 +261,7 @@ async function handleAnalyzeBatch(
   pyodide.globals.set('batch_index', batchIndex);
   pyodide.globals.set('total_batches', totalBatches);
 
-  const result = await pyodide.runPythonAsync(`
-import json
-from dicompare.interface import analyze_dicom_files_for_ui
-
-names = list(dicom_file_names)
-batch_num = batch_index + 1
-num_batches = total_batches
-print(f"[Worker] Processing batch {batch_num}/{num_batches}: {len(names)} files...")
-
-dicom_bytes = {}
-for i, name in enumerate(names):
-    content = dicom_file_contents[i]
-    if hasattr(content, 'getBuffer'):
-        buf = content.getBuffer()
-        dicom_bytes[name] = bytes(buf.data)
-        buf.release()
-    elif hasattr(content, 'to_py'):
-        dicom_bytes[name] = bytes(content.to_py())
-    else:
-        dicom_bytes[name] = bytes(content)
-
-print(f"[Worker] Converted {len(dicom_bytes)} files, analyzing...")
-acquisitions = await analyze_dicom_files_for_ui(dicom_bytes, progress_callback)
-
-# Explicit cleanup to free memory before next batch
-del dicom_bytes
-del dicom_file_names
-del dicom_file_contents
-
-json.dumps(acquisitions, default=str)
-  `);
+  const result = await pyodide.runPythonAsync(analyzeBatch);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -371,17 +287,7 @@ async function handleValidateAcquisition(
   pyodide.globals.set('schema_content', schemaContent);
   pyodide.globals.set('schema_acquisition_index', acquisitionIndex ?? null);
 
-  const result = await pyodide.runPython(`
-import json
-from dicompare.interface import validate_acquisition_direct
-
-acq_data = acquisition_data if not hasattr(acquisition_data, 'to_py') else acquisition_data.to_py()
-schema_str = schema_content if not hasattr(schema_content, 'to_py') else schema_content.to_py()
-acq_index = schema_acquisition_index if not hasattr(schema_acquisition_index, 'to_py') else schema_acquisition_index.to_py()
-
-results = validate_acquisition_direct(acq_data, schema_str, acq_index)
-json.dumps(results, default=str)
-  `);
+  const result = await pyodide.runPython(validateAcquisition);
 
   const parsedResult = JSON.parse(result as string);
 
@@ -428,18 +334,7 @@ async function handleLoadProtocolFile(
   pyodide.globals.set('_protocol_filename', fileName);
   pyodide.globals.set('_protocol_type', fileType);
 
-  const result = await pyodide.runPython(`
-import json
-import base64
-from dicompare.interface import load_protocol_for_ui
-
-file_bytes = base64.b64decode(_protocol_base64)
-file_name = _protocol_filename
-file_type = _protocol_type
-
-acquisitions = load_protocol_for_ui(file_bytes, file_name, file_type)
-json.dumps(acquisitions, default=str)
-  `);
+  const result = await pyodide.runPython(loadProtocol);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -455,13 +350,7 @@ async function handleSearchFields(
   pyodide.globals.set('_search_query', query);
   pyodide.globals.set('_search_limit', limit);
 
-  const result = await pyodide.runPython(`
-import json
-from dicompare.interface import search_dicom_dictionary
-
-results = search_dicom_dictionary(_search_query, _search_limit)
-json.dumps(results, default=str)
-  `);
+  const result = await pyodide.runPython(searchFields);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -474,13 +363,7 @@ async function handleGetFieldInfo(
 
   pyodide.globals.set('_field_or_tag', payload.fieldOrTag);
 
-  const result = await pyodide.runPython(`
-import json
-from dicompare import get_tag_info
-
-info = get_tag_info(_field_or_tag)
-json.dumps(info, default=str)
-  `);
+  const result = await pyodide.runPython(getFieldInfo);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -497,16 +380,7 @@ async function handleGenerateSchema(
   pyodide.globals.set('_ui_acquisitions_json', JSON.stringify(acquisitions));
   pyodide.globals.set('_schema_metadata_json', JSON.stringify(metadata));
 
-  const result = await pyodide.runPython(`
-import json
-from dicompare.interface import build_schema_from_ui_acquisitions
-
-acqs = json.loads(_ui_acquisitions_json)
-meta = json.loads(_schema_metadata_json)
-
-schema = build_schema_from_ui_acquisitions(acqs, meta)
-json.dumps(schema, default=str)
-  `);
+  const result = await pyodide.runPython(generateSchema);
 
   sendSuccess(id, JSON.parse(result as string));
 }
@@ -526,21 +400,7 @@ async function handleGenerateTestDicoms(
     seriesDescription: acquisition.seriesDescription || 'Generated Test Data'
   });
 
-  await pyodide.runPythonAsync(`
-from dicompare.io import generate_test_dicoms_from_schema
-
-test_rows = test_data_rows.to_py() if hasattr(test_data_rows, 'to_py') else test_data_rows
-field_info = schema_fields.to_py() if hasattr(schema_fields, 'to_py') else schema_fields
-acq_info = acquisition_info.to_py() if hasattr(acquisition_info, 'to_py') else acquisition_info
-
-zip_bytes = generate_test_dicoms_from_schema(
-    test_data=test_rows,
-    field_definitions=field_info,
-    acquisition_info=acq_info
-)
-
-globals()['dicom_zip_bytes'] = list(zip_bytes)
-  `);
+  await pyodide.runPythonAsync(generateTestDicoms);
 
   const zipBytesResult = await pyodide.runPython(`dicom_zip_bytes`);
 
@@ -570,23 +430,7 @@ async function handleCategorizeFields(
   pyodide.globals.set('test_data_rows', testData);
 
   try {
-    const result = await pyodide.runPythonAsync(`
-import json
-from dicompare.io import categorize_fields, get_unhandled_field_warnings
-
-field_defs = field_definitions.to_py() if hasattr(field_definitions, 'to_py') else field_definitions
-test_rows = test_data_rows.to_py() if hasattr(test_data_rows, 'to_py') else test_data_rows
-
-categorized = categorize_fields(field_defs)
-warnings = get_unhandled_field_warnings(field_defs, test_rows)
-
-json.dumps({
-    'standardFields': len(categorized['standard']),
-    'handledFields': len(categorized['handled']),
-    'unhandledFields': len(categorized['unhandled']),
-    'unhandledFieldWarnings': warnings
-})
-    `);
+    const result = await pyodide.runPythonAsync(categorizeFields);
 
     sendSuccess(id, JSON.parse(result as string));
   } catch {
@@ -606,22 +450,23 @@ async function handleClearCache(id: string): Promise<void> {
   validationCache.clear();
   console.log('[Worker] Validation cache cleared');
 
-  await pyodide.runPython(`
-from dicompare.interface.web_utils import _cache_session
-_cache_session(None, {}, {})
-print("[Worker] Session cache cleared")
-  `);
+  await pyodide.runPython(clearCachePy);
 
   sendSuccess(id, { cleared: true });
 }
 
 async function handleRunPython(
   id: string,
-  payload: { code: string }
+  payload: { code: string; globals?: Record<string, any> }
 ): Promise<void> {
   if (!pyodide) throw new Error('Pyodide not initialized');
 
-  const { code } = payload;
+  const { code, globals } = payload;
+  if (globals) {
+    for (const [name, value] of Object.entries(globals)) {
+      pyodide.globals.set(name, value);
+    }
+  }
   const result = await pyodide.runPython(code);
   sendSuccess(id, result);
 }

@@ -8,6 +8,7 @@ import { dicompareWorkerAPI as dicompareAPI } from '../../services/DicompareWork
 import { getFieldByKeyword } from '../../services/dicomFieldService';
 import { extractValidationFieldValues, generateTestDataFromSchema, generateValueFromField } from '../../utils/testDataGeneration';
 import { useTheme } from '../../contexts/ThemeContext';
+import executeTestDataPy from '../../python/execute_test_data.py';
 
 interface TestDicomGeneratorModalProps {
   isOpen: boolean;
@@ -391,57 +392,8 @@ return test_data`;
         setPyodideReady(true);
       }
 
-      const wrappedCode = `
-import pandas as pd
-import numpy as np
-import json
-
-def generate_test_data():
-${codeTemplate.split('\n').map(line => '    ' + line).join('\n')}
-
-output = None
-try:
-    result = generate_test_data()
-    if not isinstance(result, dict):
-        raise ValueError("Code must return a dictionary")
-
-    # Convert numpy arrays and other non-serializable types to lists
-    cleaned_result = {}
-    for key, value in result.items():
-        if hasattr(value, 'tolist'):  # numpy array
-            cleaned_result[key] = value.tolist()
-        elif isinstance(value, list):
-            # Handle lists that might contain numpy types
-            cleaned_list = []
-            for item in value:
-                if hasattr(item, 'tolist'):
-                    cleaned_list.append(item.tolist())
-                elif hasattr(item, 'item'):  # numpy scalar
-                    cleaned_list.append(item.item())
-                else:
-                    cleaned_list.append(item)
-            cleaned_result[key] = cleaned_list
-        elif hasattr(value, 'item'):  # numpy scalar
-            cleaned_result[key] = [value.item()]
-        else:
-            cleaned_result[key] = [value] if not isinstance(value, list) else value
-
-    # Validate all arrays have same length
-    if cleaned_result:
-        lengths = [len(v) for v in cleaned_result.values()]
-        if len(set(lengths)) > 1:
-            field_lengths = {k: len(v) for k, v in cleaned_result.items()}
-            raise ValueError(f"All fields must have the same number of values. Found: {field_lengths}")
-
-    output = json.dumps({"success": True, "data": cleaned_result})
-except Exception as e:
-    output = json.dumps({"success": False, "error": str(e)})
-
-# Return the JSON output
-output
-`;
-
-      const result = await dicompareAPI.runPython(wrappedCode);
+      const userCodeIndented = codeTemplate.split('\n').map(line => '    ' + line).join('\n');
+      const result = await dicompareAPI.runPython(executeTestDataPy, { _user_code_indented: userCodeIndented });
 
       if (result === undefined || result === null) {
         throw new Error('No output from Python code execution');

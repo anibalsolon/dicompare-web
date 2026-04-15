@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+declare module '*.py' {
+  const content: string;
+  export default content;
+}
+
 interface ImportMetaEnv {
   readonly DEV: boolean;
   readonly PROD: boolean;

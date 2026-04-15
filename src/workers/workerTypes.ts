@@ -25,7 +25,7 @@ export type WorkerRequest =
   | { id: RequestId; type: 'generateSchema'; payload: { acquisitions: any[]; metadata: any } }
   | { id: RequestId; type: 'generateTestDicoms'; payload: { acquisition: any; testData: any[]; fields: any[] } }
   | { id: RequestId; type: 'categorizeFields'; payload: { fields: any[]; testData: any[] } }
-  | { id: RequestId; type: 'runPython'; payload: { code: string } }
+  | { id: RequestId; type: 'runPython'; payload: { code: string; globals?: Record<string, any> } }
   | { id: RequestId; type: 'clearCache'; payload?: undefined };
 
 // Response types (worker → main)

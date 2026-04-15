@@ -2,6 +2,19 @@ import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import { copyFileSync, cpSync, existsSync, mkdirSync } from 'fs'
+import type { Plugin } from 'vite'
+
+// Plugin to import .py files as raw strings
+function pythonPlugin(): Plugin {
+  return {
+    name: 'python-files',
+    transform(code, id) {
+      if (id.endsWith('.py')) {
+        return `export default ${JSON.stringify(code)}`;
+      }
+    }
+  };
+}
 
 // Plugin to copy Pyodide files for offline support
 function copyPyodidePlugin() {
@@ -58,7 +71,7 @@ export default defineConfig({
       copyPublicDir: true
     },
     publicDir: 'public',
-    plugins: [react(), copyPyodidePlugin()],
+    plugins: [react(), pythonPlugin(), copyPyodidePlugin()],
     server: {
       port: 3001
     },
